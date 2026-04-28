@@ -6,6 +6,9 @@ from sqlalchemy import text
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
+PASTEL_COLORS = ['#A1C9F4', '#FFB482', '#8DE5A1', '#FF9F9B', '#D0BBFF', 
+                 '#DEBB9B', '#FAB0E4', '#CFCFCF', '#FFFEA3', '#B9F2F0']
+
 # --- 1. CONFIGURAÇÃO E ESTADO INICIAL ---
 st.set_page_config(page_title="Controle Financeiro", layout="wide")
 
@@ -221,23 +224,81 @@ if not df_atual.empty:
                 st.rerun()
 
     with t2:
+        # Configuração global de estilo para os gráficos
+        TEXT_SIZE = 16
+        FONT_FAMILY = "Arial"
+        
         df_g = df_mes[df_mes['tipo'] != 'Receita']
         if not df_g.empty:
-            cg1, cdiv, cg2 = st.columns([10, 1, 10])
+            cg1, cg2 = st.columns(2)
+            
             with cg1:
-                df_cat = df_g.groupby('categoria')['valor'].sum().reset_index()
-                fig1 = px.bar(df_cat, x='categoria', y='valor', text=df_cat['valor'].apply(formata_br), title="Gastos por Categoria")
-                fig1.update_layout(yaxis=dict(visible=False), xaxis_title=None); st.plotly_chart(fig1, use_container_width=True)
+                df_cat = df_g.groupby('categoria')['valor'].sum().sort_values(ascending=False).reset_index()
+                fig1 = px.bar(df_cat, x='categoria', y='valor', 
+                              text=df_cat['valor'].apply(formata_br),
+                              title="<b>Gastos por Categoria</b>",
+                              color_discrete_sequence=[PASTEL_COLORS[0]])
+                
+                fig1.update_traces(textposition='outside', textfont_size=TEXT_SIZE, marker_line_width=1.5, opacity=0.8)
+                fig1.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(size=TEXT_SIZE, family=FONT_FAMILY),
+                    title_font_size=22,
+                    xaxis=dict(tickfont=dict(size=TEXT_SIZE), title=None),
+                    yaxis=dict(visible=False),
+                    margin=dict(t=60, b=0, l=0, r=0)
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+
             with cg2:
-                df_tp = df_g.groupby('tipo')['valor'].sum().reset_index()
-                fig2 = px.bar(df_tp, x='tipo', y='valor', text=df_tp['valor'].apply(formata_br), title="Gastos por Fonte")
-                fig2.update_layout(yaxis=dict(visible=False), xaxis_title=None); st.plotly_chart(fig2, use_container_width=True)
+                df_tp = df_g.groupby('tipo')['valor'].sum().sort_values(ascending=False).reset_index()
+                fig2 = px.bar(df_tp, x='tipo', y='valor', 
+                              text=df_tp['valor'].apply(formata_br),
+                              title="<b>Gastos por Fonte</b>",
+                              color_discrete_sequence=[PASTEL_COLORS[1]])
+                
+                fig2.update_traces(textposition='outside', textfont_size=TEXT_SIZE, marker_line_width=1.5, opacity=0.8)
+                fig2.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(size=TEXT_SIZE, family=FONT_FAMILY),
+                    title_font_size=22,
+                    xaxis=dict(tickfont=dict(size=TEXT_SIZE), title=None),
+                    yaxis=dict(visible=False),
+                    margin=dict(t=60, b=0, l=0, r=0)
+                )
+                st.plotly_chart(fig2, use_container_width=True)
         
+        # --- Gráfico de Projeção com nomes de meses ---
         df_f = df_atual[(df_atual['mes_ano'] >= mes_sel) & (df_atual['tipo'].str.contains('Crédito'))]
         if not df_f.empty:
-            st.markdown("### Projeção de Faturas Futuras")
-            df_p = df_f.groupby(['mes_ano', 'tipo'])['valor'].sum().reset_index()
-            fig3 = px.bar(df_p, x='mes_ano', y='valor', color='tipo', text=df_p['valor'].apply(formata_br), title="Evolução de Crédito")
-            fig3.update_layout(xaxis=dict(type='category'), yaxis=dict(visible=False)); st.plotly_chart(fig3, use_container_width=True)
+            st.markdown("---")
+            st.markdown("### 📅 Projeção de Faturas Futuras")
+            
+            # Formata a coluna mes_ano para exibir nome do mês/ano (ex: Jun/26)
+            df_f = df_f.copy()
+            df_f['exibicao_mes'] = pd.to_datetime(df_f['competencia']).dt.strftime('%b/%y')
+            
+            df_p = df_f.groupby(['exibicao_mes', 'tipo', 'mes_ano'])['valor'].sum().reset_index()
+            df_p = df_p.sort_values('mes_ano') # Garante a ordem cronológica
+            
+            fig3 = px.bar(df_p, x='exibicao_mes', y='valor', color='tipo', 
+                          text=df_p['valor'].apply(formata_br),
+                          title="<b>Evolução de Crédito por Instituição</b>",
+                          color_discrete_sequence=PASTEL_COLORS[2:])
+            
+            fig3.update_traces(textposition='inside', textfont=dict(size=TEXT_SIZE, family=FONT_FAMILY))
+            fig3.update_layout(
+                barmode='stack',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(size=TEXT_SIZE, family=FONT_FAMILY),
+                title_font_size=22,
+                xaxis=dict(type='category', title=None, tickfont=dict(size=TEXT_SIZE)),
+                yaxis=dict(visible=False),
+                legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1, title=None, font=dict(size=TEXT_SIZE)),
+                margin=dict(t=100, b=0, l=0, r=0)
+            )
+            st.plotly_chart(fig3, use_container_width=True)
 else:
     st.info(f"Logado como {st.session_state.email}. Adicione o primeiro registro para ativar os gráficos!")
