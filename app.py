@@ -6,9 +6,18 @@ from sqlalchemy import text
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-# --- CONFIGURAÇÃO E ESTILO ---
+# --- 1. CONFIGURAÇÃO E ESTADO INICIAL ---
 st.set_page_config(page_title="Controle Financeiro", layout="wide")
 
+# Inicializa variáveis de estado
+if 'logado' not in st.session_state:
+    st.session_state.logado = False
+if 'email' not in st.session_state:
+    st.session_state.email = ''
+if 'mes_foco' not in st.session_state:
+    st.session_state.mes_foco = None
+
+# Estilização
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { background-color: #fcfbf4; }
@@ -16,19 +25,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- CONEXÃO ---
+# --- 2. CONEXÃO ---
 conn = st.connection("supabase", type="sql")
 
-# --- FUNÇÕES DE SEGURANÇA ---
+# --- 3. FUNÇÕES DE SEGURANÇA E USUÁRIO ---
 def gerar_hash(senha):
     return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 def verificar_senha(senha, hash_banco):
     return bcrypt.checkpw(senha.encode('utf-8'), hash_banco.encode('utf-8'))
 
-# --- FUNÇÕES DE BANCO (USUÁRIOS) ---
 def verificar_login(email, senha):
-    # MUDANÇA AQUI: Passamos a query como STRING pura para o conn.query
     query = "SELECT senha_hash FROM usuarios WHERE email = :email"
     res = conn.query(query, params={"email": email}, ttl=0)
     if not res.empty:
@@ -49,9 +56,8 @@ def criar_usuario(email, senha):
     except:
         return False
 
-# --- FUNÇÕES DE BANCO (DADOS) ---
+# --- 4. FUNÇÕES DE DADOS (FINANCEIRO) ---
 def carregar_dados(email):
-    # MUDANÇA AQUI: Passamos a query como STRING pura para o conn.query
     query = "SELECT * FROM registros_financeiros WHERE usuario_email = :email"
     df = conn.query(query, params={"email": email}, ttl=0)
     if not df.empty:
@@ -78,10 +84,7 @@ def excluir_registro(id_registro, email):
         )
         s.commit()
 
-# --- LÓGICA DE ACESSO ---
-if 'logado' not in st.session_state:
-    st.session_state.logado = False
-
+# --- 5. LÓGICA DE ACESSO (LOGIN/CADASTRO) ---
 if not st.session_state.logado:
     st.title("🛡️ Sistema Financeiro")
     tab_login, tab_reg = st.tabs(["Entrar", "Cadastrar"])
@@ -107,11 +110,12 @@ if not st.session_state.logado:
                 st.error("Erro ao criar conta. E-mail já existe?")
     st.stop()
 
-# --- DASHBOARD (PÓS-LOGIN) ---
+# --- 6. DASHBOARD (USUÁRIO LOGADO) ---
 st.sidebar.markdown(f"**Usuário:** {st.session_state.email}")
 if st.sidebar.button("Sair"):
     st.session_state.logado = False
     st.session_state.email = ''
+    st.session_state.mes_foco = None
     st.rerun()
 
 TIPOS_TRANSACOES = [
@@ -141,7 +145,7 @@ with st.sidebar.form("form_registro", clear_on_submit=True):
     lista_cat = CATEGORIAS_RECEITA if tipo_sel == 'Receita' else CATEGORIAS_DESPESA
     cat = st.selectbox("Categoria", lista_cat)
     desc = st.text_input("Descrição")
-    val = st.number_input("Valor", min_value=0.01, format="%.2f")
+    val = st.number_input("Valor Total", min_value=0.01, format="%.2f")
     comp = st.date_input("Mês de Competência")
     parc = st.number_input("Parcelas", min_value=1, step=1, value=1) if 'Crédito' in tipo_sel else 1
     
@@ -154,18 +158,30 @@ with st.sidebar.form("form_registro", clear_on_submit=True):
                 'usuario_email': st.session_state.email
             }
             adicionar_registro(reg)
+        
+        # Redirecionamento: Foca no mês do registro recém-criado
+        st.session_state.mes_foco = comp.strftime('%Y-%m')
         st.rerun()
 
-# Conteúdo Principal
+# Carregamento de Dados e Filtro de Mês
 df_atual = carregar_dados(st.session_state.email)
 
 if not df_atual.empty:
     df_atual['mes_ano'] = pd.to_datetime(df_atual['competencia']).dt.strftime('%Y-%m')
     meses = sorted(df_atual['mes_ano'].unique())
-    mes_sel = st.selectbox("Selecione o Mês", meses, index=len(meses)-1)
+    
+    # Define qual mês mostrar por padrão
+    if st.session_state.mes_foco in meses:
+        idx_padrao = meses.index(st.session_state.mes_foco)
+    else:
+        idx_padrao = len(meses) - 1
+        
+    mes_sel = st.selectbox("Selecione o Mês", meses, index=idx_padrao)
+    st.session_state.mes_foco = mes_sel # Mantém o foco se navegar manualmente
+    
     df_mes = df_atual[df_atual['mes_ano'] == mes_sel]
     
-    # Métricas
+    # Métricas e Cálculos
     rec_total = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
     rec_vr = df_mes[df_mes['categoria'] == 'VR']['valor'].sum()
     desp_pix = df_mes[df_mes['tipo'] == 'Despesa (PIX)']['valor'].sum()
