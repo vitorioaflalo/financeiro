@@ -1,7 +1,8 @@
 streamlit
 pandas
 plotly
-python-dateutil
-sqlalchemy
-psycopg2-binary
 bcrypt
+SQLAlchemy
+python-dateutil
+streamlit-cookies-controller
+psycopg2-binary
