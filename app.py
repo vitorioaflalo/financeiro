@@ -5,33 +5,35 @@ import bcrypt
 from sqlalchemy import text
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+from streamlit_cookies_controller import CookieController
 
 PASTEL_COLORS = ['#A1C9F4', '#FFB482', '#8DE5A1', '#FF9F9B', '#D0BBFF', 
                  '#DEBB9B', '#FAB0E4', '#CFCFCF', '#FFFEA3', '#B9F2F0']
 
-# --- 1. CONFIGURAÇÃO E ESTADO INICIAL ---
 st.set_page_config(page_title="Controle Financeiro", layout="wide")
 
-# Inicializa variáveis de estado
+cookie_controller = CookieController()
+
 if 'logado' not in st.session_state:
     st.session_state.logado = False
 if 'email' not in st.session_state:
     st.session_state.email = ''
-if 'mes_foco' not in st.session_state:
-    st.session_state.mes_foco = None
 
-# Estilização
+if not st.session_state.logado:
+    sessao_salva = cookie_controller.get('user_session')
+    if sessao_salva:
+        st.session_state.logado = True
+        st.session_state.email = sessao_salva
+
 st.markdown("""
     <style>
-        [data-testid="stSidebar"] { background-color: #fcfbf4; }
+        [data-testid="stSidebar"] { background-color: transparent; }
         div.stButton > button { background-color: #4a4e69; color: white; border-radius: 5px; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. CONEXÃO ---
 conn = st.connection("supabase", type="sql")
 
-# --- 3. FUNÇÕES DE SEGURANÇA E USUÁRIO ---
 def gerar_hash(senha):
     return bcrypt.hashpw(senha.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
@@ -59,7 +61,6 @@ def criar_usuario(email, senha):
     except:
         return False
 
-# --- 4. FUNÇÕES DE DADOS (FINANCEIRO) ---
 def carregar_dados(email):
     query = "SELECT * FROM registros_financeiros WHERE usuario_email = :email"
     df = conn.query(query, params={"email": email}, ttl=0)
@@ -87,7 +88,12 @@ def excluir_registro(id_registro, email):
         )
         s.commit()
 
-# --- 5. LÓGICA DE ACESSO (LOGIN/CADASTRO) ---
+def atualizar_registro_db(id_registro, coluna, novo_valor, email):
+    query = f"UPDATE registros_financeiros SET {coluna} = :valor WHERE id = :id AND usuario_email = :email"
+    with conn.session as s:
+        s.execute(text(query), {"valor": novo_valor, "id": id_registro, "email": email})
+        s.commit()
+
 if not st.session_state.logado:
     st.title("🛡️ Sistema Financeiro")
     tab_login, tab_reg = st.tabs(["Entrar", "Cadastrar"])
@@ -95,10 +101,14 @@ if not st.session_state.logado:
     with tab_login:
         e = st.text_input("E-mail", key="l_email")
         p = st.text_input("Senha", type="password", key="l_pass")
+        lembrar = st.checkbox("Lembrar-me", value=True)
+        
         if st.button("Acessar"):
             if verificar_login(e.lower().strip(), p):
                 st.session_state.logado = True
                 st.session_state.email = e.lower().strip()
+                if lembrar:
+                    cookie_controller.set('user_session', st.session_state.email, max_age=30*24*60*60)
                 st.rerun()
             else:
                 st.error("E-mail ou senha incorretos.")
@@ -108,17 +118,16 @@ if not st.session_state.logado:
         np = st.text_input("Nova Senha", type="password", key="r_pass")
         if st.button("Criar Conta"):
             if criar_usuario(ne.lower().strip(), np):
-                st.success("Conta criada! Faça login.")
+                st.success("Conta criada. Faça login.")
             else:
-                st.error("Erro ao criar conta. E-mail já existe?")
+                st.error("Erro ao criar conta.")
     st.stop()
 
-# --- 6. DASHBOARD (USUÁRIO LOGADO) ---
 st.sidebar.markdown(f"**Usuário:** {st.session_state.email}")
 if st.sidebar.button("Sair"):
     st.session_state.logado = False
     st.session_state.email = ''
-    st.session_state.mes_foco = None
+    cookie_controller.remove('user_session')
     st.rerun()
 
 TIPOS_TRANSACOES = [
@@ -129,18 +138,9 @@ TIPOS_TRANSACOES = [
 CATEGORIAS_RECEITA = ['Salário Líquido', 'VR', 'Outras Receitas', 'Resgate (Dinheiro Guardado)']
 CATEGORIAS_DESPESA = ['Moradia', 'Transporte', 'Mercado', 'Delivery', 'Lazer', 'Saídas', 'Contas', 'Aplicação (Dinheiro Guardado)']
 
-def criar_card(titulo, valor, cor_texto, cor_fundo):
-    st.markdown(f"""
-    <div style="background-color: {cor_fundo}; padding: 15px; border-radius: 10px; border-left: 5px solid {cor_texto}; margin-bottom: 15px;">
-        <p style="margin: 0; font-size: 14px; color: #555; font-weight: 600;">{titulo}</p>
-        <h3 style="margin: 0; color: {cor_texto};">R$ {valor:,.2f}</h3>
-    </div>
-    """, unsafe_allow_html=True)
-
 def formata_br(valor):
     return f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
 
-# Registro Lateral
 st.sidebar.header("Novo Registro")
 tipo_sel = st.sidebar.selectbox("Tipo", TIPOS_TRANSACOES)
 
@@ -161,74 +161,105 @@ with st.sidebar.form("form_registro", clear_on_submit=True):
                 'usuario_email': st.session_state.email
             }
             adicionar_registro(reg)
-        
-        # Redirecionamento: Foca no mês do registro recém-criado
-        st.session_state.mes_foco = comp.strftime('%Y-%m')
         st.rerun()
 
-# Carregamento de Dados e Filtro de Mês
 df_atual = carregar_dados(st.session_state.email)
 
 if not df_atual.empty:
     df_atual['mes_ano'] = pd.to_datetime(df_atual['competencia']).dt.strftime('%Y-%m')
-    meses = sorted(df_atual['mes_ano'].unique())
     
-    # Define qual mês mostrar por padrão
-    if st.session_state.mes_foco in meses:
-        idx_padrao = meses.index(st.session_state.mes_foco)
+    # Filtro de Período
+    hoje = datetime.today().date()
+    inicio_padrao = hoje.replace(day=1)
+    fim_padrao = (inicio_padrao + relativedelta(months=1)) - relativedelta(days=1)
+    
+    datas = st.date_input("Filtrar Período", value=(inicio_padrao, fim_padrao))
+    
+    if isinstance(datas, tuple) and len(datas) == 2:
+        data_inicio, data_fim = datas
+    elif isinstance(datas, tuple) and len(datas) == 1:
+        data_inicio = data_fim = datas[0]
     else:
-        idx_padrao = len(meses) - 1
+        data_inicio = data_fim = datas
         
-    mes_sel = st.selectbox("Selecione o Mês", meses, index=idx_padrao)
-    st.session_state.mes_foco = mes_sel # Mantém o foco se navegar manualmente
+    df_periodo = df_atual[(df_atual['competencia'] >= data_inicio) & (df_atual['competencia'] <= data_fim)].copy()
     
-    df_mes = df_atual[df_atual['mes_ano'] == mes_sel]
+    rec_total = df_periodo[df_periodo['tipo'] == 'Receita']['valor'].sum()
+    rec_vr = df_periodo[df_periodo['categoria'] == 'VR']['valor'].sum()
+    desp_pix = df_periodo[df_periodo['tipo'] == 'Despesa (PIX)']['valor'].sum()
+    desp_cred = df_periodo[df_periodo['tipo'].str.contains('Crédito') | (df_periodo['tipo'] == 'Despesa (Cheque Especial)')]['valor'].sum()
     
-    # Métricas e Cálculos
-    rec_total = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
-    rec_vr = df_mes[df_mes['categoria'] == 'VR']['valor'].sum()
-    desp_pix = df_mes[df_mes['tipo'] == 'Despesa (PIX)']['valor'].sum()
-    desp_cred = df_mes[df_mes['tipo'].str.contains('Crédito') | (df_mes['tipo'] == 'Despesa (Cheque Especial)')]['valor'].sum()
-    
-    df_h = df_atual[df_atual['mes_ano'] <= mes_sel]
+    df_h = df_atual[df_atual['competencia'] <= data_fim]
     guardado = df_h[df_h['categoria'] == 'Aplicação (Dinheiro Guardado)']['valor'].sum() - \
                df_h[df_h['categoria'] == 'Resgate (Dinheiro Guardado)']['valor'].sum()
 
-    t1, t2 = st.tabs(["💰 Resumo", "📊 Gráficos"])
+    t1, t2, t3 = st.tabs(["💰 Resumo", "📊 Gráficos", "💳 Faturas"])
 
     with t1:
         st.markdown("### Visão Geral")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Rec. Total", f"R$ {rec_total:,.2f}")
-        c2.metric("Saída Pix", f"R$ {desp_pix:,.2f}")
-        c3.metric("Faturas/Crédito", f"R$ {desp_cred:,.2f}")
+        with st.container(border=True): c1.metric("Rec. Total", formata_br(rec_total))
+        with st.container(border=True): c2.metric("Saída Pix", formata_br(desp_pix))
+        with st.container(border=True): c3.metric("Faturas/Crédito", formata_br(desp_cred))
         
         st.markdown("### Saldos Calculados")
         c4, c5, c6, c7 = st.columns(4)
-        with c4: criar_card("Saldo Conta", rec_total - rec_vr - desp_pix, "#1565c0", "#e3f2fd")
-        with c5: criar_card("Saldo VR", rec_vr - df_mes[df_mes['tipo'] == 'Despesa (VR)']['valor'].sum(), "#0277bd", "#e1f5fe")
-        with c6: criar_card("Resultado Mês", rec_total - df_mes[df_mes['tipo'] != 'Receita']['valor'].sum(), "#4527a0", "#ede7f6")
-        with c7: criar_card("Acumulado Guardado", guardado, "#6a1b9a", "#f3e5f5")
+        with c4: 
+            with st.container(border=True): st.metric("Saldo Conta", formata_br(rec_total - rec_vr - desp_pix))
+        with c5: 
+            with st.container(border=True): st.metric("Saldo VR", formata_br(rec_vr - df_periodo[df_periodo['tipo'] == 'Despesa (VR)']['valor'].sum()))
+        with c6: 
+            with st.container(border=True): st.metric("Resultado Mês", formata_br(rec_total - df_periodo[df_periodo['tipo'] != 'Receita']['valor'].sum()))
+        with c7: 
+            with st.container(border=True): st.metric("Acumulado Guardado", formata_br(guardado))
 
         st.markdown("---")
         st.subheader("Registros Detalhados")
-        for _, row in df_mes.sort_values(by='competencia').iterrows():
-            col1, col2, col3, col4, col5, col6 = st.columns([1.5, 2.5, 2, 2, 1.5, 0.5])
-            col1.write(row['competencia'].strftime('%d/%m/%Y'))
-            col2.write(f"{'🟢' if row['tipo'] == 'Receita' else '🟡' if 'Crédito' in row['tipo'] else '🔴'} {row['tipo']}")
-            col3.write(row['categoria'])
-            col4.write(row['descricao'])
-            col5.write(f"R$ {row['valor']:,.2f}")
-            if col6.button("🗑️", key=f"del_{row['id']}"):
-                excluir_registro(row['id'], st.session_state.email)
-                st.rerun()
+        
+        df_editavel = df_periodo.reset_index(drop=True)
+        
+        config_colunas = {
+            "id": None,
+            "usuario_email": None,
+            "mes_ano": None,
+            "parcela_atual": None,
+            "total_parcelas": None,
+            "competencia": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+            "tipo": st.column_config.SelectboxColumn("Fonte/Saída", options=TIPOS_TRANSACOES),
+            "categoria": st.column_config.SelectboxColumn("Categoria", options=CATEGORIAS_RECEITA + CATEGORIAS_DESPESA),
+            "descricao": st.column_config.TextColumn("Descrição"),
+            "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f")
+        }
+
+        st.data_editor(
+            df_editavel,
+            column_config=config_colunas,
+            use_container_width=True,
+            num_rows="dynamic",
+            key="editor_registros"
+        )
+
+        if st.button("Salvar Alterações da Tabela"):
+            mudancas = st.session_state.editor_registros
+            
+            if mudancas.get("deleted_rows"):
+                for row_idx in mudancas["deleted_rows"]:
+                    id_del = df_editavel.loc[row_idx, 'id']
+                    excluir_registro(int(id_del), st.session_state.email)
+                    
+            if mudancas.get("edited_rows"):
+                for row_idx_str, alteracoes in mudancas["edited_rows"].items():
+                    row_idx = int(row_idx_str)
+                    id_edit = df_editavel.loc[row_idx, 'id']
+                    for col, val in alteracoes.items():
+                        atualizar_registro_db(int(id_edit), col, val, st.session_state.email)
+            st.rerun()
 
     with t2:
-        # Configuração global de estilo para os gráficos
         TEXT_SIZE = 16
         FONT_FAMILY = "Arial"
         
-        df_g = df_mes[df_mes['tipo'] != 'Receita']
+        df_g = df_periodo[df_periodo['tipo'] != 'Receita']
         if not df_g.empty:
             cg1, cg2 = st.columns(2)
             
@@ -238,17 +269,8 @@ if not df_atual.empty:
                               text=df_cat['valor'].apply(formata_br),
                               title="<b>Gastos por Categoria</b>",
                               color_discrete_sequence=[PASTEL_COLORS[0]])
-                
-                fig1.update_traces(textposition='outside', textfont_size=TEXT_SIZE, marker_line_width=1.5, opacity=0.8)
-                fig1.update_layout(
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    font=dict(size=TEXT_SIZE, family=FONT_FAMILY),
-                    title_font_size=22,
-                    xaxis=dict(tickfont=dict(size=TEXT_SIZE), title=None),
-                    yaxis=dict(visible=False),
-                    margin=dict(t=60, b=0, l=0, r=0)
-                )
+                fig1.update_traces(textposition='outside', textfont_size=TEXT_SIZE, opacity=0.8)
+                fig1.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', yaxis=dict(visible=False))
                 st.plotly_chart(fig1, use_container_width=True)
 
             with cg2:
@@ -257,48 +279,27 @@ if not df_atual.empty:
                               text=df_tp['valor'].apply(formata_br),
                               title="<b>Gastos por Fonte</b>",
                               color_discrete_sequence=[PASTEL_COLORS[1]])
-                
-                fig2.update_traces(textposition='outside', textfont_size=TEXT_SIZE, marker_line_width=1.5, opacity=0.8)
-                fig2.update_layout(
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    font=dict(size=TEXT_SIZE, family=FONT_FAMILY),
-                    title_font_size=22,
-                    xaxis=dict(tickfont=dict(size=TEXT_SIZE), title=None),
-                    yaxis=dict(visible=False),
-                    margin=dict(t=60, b=0, l=0, r=0)
-                )
+                fig2.update_traces(textposition='outside', textfont_size=TEXT_SIZE, opacity=0.8)
+                fig2.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', yaxis=dict(visible=False))
                 st.plotly_chart(fig2, use_container_width=True)
+
+    with t3:
+        st.markdown("### Resumo de Faturas")
+        df_credito = df_atual[df_atual['tipo'].str.contains('Crédito')].copy()
         
-        # --- Gráfico de Projeção com nomes de meses ---
-        df_f = df_atual[(df_atual['mes_ano'] >= mes_sel) & (df_atual['tipo'].str.contains('Crédito'))]
-        if not df_f.empty:
-            st.markdown("---")
-            st.markdown("### 📅 Projeção de Faturas Futuras")
+        if not df_credito.empty:
+            df_faturas = df_credito.groupby(['mes_ano', 'tipo'])['valor'].sum().reset_index()
+            df_faturas = df_faturas.sort_values(by='mes_ano')
             
-            # Formata a coluna mes_ano para exibir nome do mês/ano (ex: Jun/26)
-            df_f = df_f.copy()
-            df_f['exibicao_mes'] = pd.to_datetime(df_f['competencia']).dt.strftime('%b/%y')
+            df_pivot = df_faturas.pivot(index='mes_ano', columns='tipo', values='valor').fillna(0)
+            df_pivot['Total Mês'] = df_pivot.sum(axis=1)
             
-            df_p = df_f.groupby(['exibicao_mes', 'tipo', 'mes_ano'])['valor'].sum().reset_index()
-            df_p = df_p.sort_values('mes_ano') # Garante a ordem cronológica
-            
-            fig3 = px.bar(df_p, x='exibicao_mes', y='valor', color='tipo', 
-                          text=df_p['valor'].apply(formata_br),
-                          title="<b>Evolução de Crédito por Instituição</b>",
-                          color_discrete_sequence=PASTEL_COLORS[2:])
-            
-            fig3.update_traces(textposition='inside', textfont=dict(size=TEXT_SIZE, family=FONT_FAMILY))
-            fig3.update_layout(
-                barmode='stack',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(size=TEXT_SIZE, family=FONT_FAMILY),
-                title_font_size=22,
-                xaxis=dict(type='category', title=None, tickfont=dict(size=TEXT_SIZE)),
-                yaxis=dict(visible=False),
-                legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1, title=None, font=dict(size=TEXT_SIZE)),
-                margin=dict(t=100, b=0, l=0, r=0)
+            # Formatação visual do dataframe
+            st.dataframe(
+                df_pivot.style.format(formata_br),
+                use_container_width=True
             )
-            st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.info("Nenhum registro de crédito encontrado.")
 else:
-    st.info(f"Logado como {st.session_state.email}. Adicione o primeiro registro para ativar os gráficos!")
+    st.info("Adicione o primeiro registro para ativar os gráficos e o detalhamento.")
